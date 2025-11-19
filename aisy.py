@@ -766,7 +766,7 @@ def get_service_state(unit: str) -> str:
 
 def firewall_status(_: argparse.Namespace) -> None:
     if ufw_available():
-        result = run_command(["ufw", "status"], check=False, capture_output=True)
+        result = run_command(["ufw", "status", "verbose"], check=False, capture_output=True)
         print(result.stdout.strip())
     else:
         ensure_command("iptables")
@@ -784,7 +784,10 @@ def firewall_toggle(args: argparse.Namespace) -> None:
 def firewall_rule(args: argparse.Namespace) -> None:
     protocol = f"{args.port}/{args.protocol}"
     if ufw_available():
-        run_command(["ufw", args.action, protocol])
+        command = ["ufw", args.action, protocol]
+        if getattr(args, "comment", None):
+            command.extend(["comment", args.comment])
+        run_command(command)
     else:
         ensure_command("iptables")
         rule_action = "-A" if args.action == "allow" else "-D"
@@ -2793,7 +2796,10 @@ class AisyCliTUI:
         if protocol not in {"tcp", "udp"}:
             self.show_status("Protocol must be tcp or udp.")
             return
-        self.execute(firewall_rule, port=port, protocol=protocol, action=action)
+        comment = self.prompt_text("Optional comment", allow_empty=True, allow_cancel=True)
+        if comment is None:
+            return
+        self.execute(firewall_rule, port=port, protocol=protocol, action=action, comment=comment or None)
 
     def storage_menu(self) -> None:
         options = [

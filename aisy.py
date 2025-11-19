@@ -40,7 +40,7 @@ def run_command(
         text=True,
     )
     if check and result.returncode != 0:
-        stderr = result.stderr.strip()
+        stderr = (result.stderr or "").strip()
         raise RuntimeError(
             f"Command {' '.join(command)} failed with code {result.returncode}: {stderr}"
         )

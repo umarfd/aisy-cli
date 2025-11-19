@@ -67,6 +67,30 @@ Ensure the following packages are installed on the host before launching the CLI
 aisy  # launch the TUI
 ```
 
+### Screenshots
+
+Dashboard preview:
+
+```
+╭─────────────── Dashboard ───────────────╮
+│ Host     : demo-host                   │
+│ Kernel   : 6.8.0-xx-generic            │
+│ Time     : 2025-01-05 10:24            │
+│ Uptime   : 3d 12h                      │
+│ -------------------------------------  │
+│ CPU   [########------] 45%             │
+│ MEM   [##########----] 62%             │
+│ DISK  [######--------] 35%             │
+│ NET   RX 18.2 MB · TX 9.4 MB           │
+│ -------------------------------------  │
+│ • User management                      │
+│ • Network & Internet                   │
+│ • System & Security                    │
+╰────────────────────────────────────────╯
+```
+
+*Tip*: capture real screenshots with tools like `screen`, `tmux capture-pane`, or `asciinema`, then store them under `docs/screenshots/` and replace the preview above with Markdown image links.
+
 ### Navigation & Shortcuts
 
 - `↑/↓` select sidebar entries; `Enter` opens the highlighted category.

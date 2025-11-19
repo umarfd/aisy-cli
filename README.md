@@ -37,11 +37,34 @@ Ensure the following packages are installed on the host before launching the CLI
 - `vsftpd` (only required if you plan to manage FTP services)
 - `netplan.io` (needed for the netplan manager)
 
-Install everything with the bundled helper:
+### Installation
+
+1. **Clone repository**
+   ```bash
+   git clone https://github.com/umarfd/aisy-cli.git
+   cd aisy-cli
+   ```
+2. **Install dependencies & wrapper**
+   ```bash
+   sudo ./setup.sh /usr/local/bin/aisy
+   ```
+   - Installs required packages listed above.
+   - Creates `/usr/local/bin/aisy`; run `aisy` (or `python3 aisy.py`) to start.
+3. **Manual launcher (optional)**
+   ```bash
+   sudo ln -s "$(pwd)/aisy.py" /usr/local/bin/aisy
+   sudo chmod +x /usr/local/bin/aisy
+   ```
+4. **Uninstall**
+   ```bash
+   sudo ./uninstall.sh /usr/local/bin/aisy
+   ```
+   > Removes only the wrapper. Dependencies stay installed for other workloads.
+
+### Usage Overview
 
 ```bash
-sudo ./setup.sh /usr/local/bin/aisy
-aisy  # launches the TUI
+aisy  # launch the TUI
 ```
 
 ### Navigation & Shortcuts

@@ -9,9 +9,9 @@ fi
 TARGET="${1:-/usr/local/bin/aisy}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "Updating package index and installing dependencies (python3, openssh-client, traceroute, isc-dhcp-client)..."
+echo "Updating package index and installing dependencies (python3, openssh-client, traceroute, isc-dhcp-client, netplan.io)..."
 apt-get update -y
-apt-get install -y python3 openssh-client traceroute isc-dhcp-client >/dev/null 2>&1 || {
+apt-get install -y python3 openssh-client traceroute isc-dhcp-client netplan.io >/dev/null 2>&1 || {
     echo "Failed to install required packages." >&2
     exit 1
 }

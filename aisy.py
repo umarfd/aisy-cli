@@ -20,6 +20,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import redirect_stderr, redirect_stdout, suppress
@@ -414,13 +415,13 @@ def configure_ssh_port(args: argparse.Namespace) -> None:
 
 
 def package_list_updates(_: argparse.Namespace) -> None:
-    ensure_command("apt")
-    result = run_command(
-        ["apt", "list", "--upgradable"],
-        capture_output=True,
-        check=False,
-    )
-    print(result.stdout.strip() or result.stderr.strip() or "All packages up to date.")
+    packages = pending_upgrade_packages()
+    if not packages:
+        print("All packages up to date.")
+        return
+    print("Packages with updates available:\n")
+    for line in packages:
+        print(line)
 
 
 def package_install(args: argparse.Namespace) -> None:
@@ -444,6 +445,33 @@ def package_search(args: argparse.Namespace) -> None:
         check=False,
     )
     print(result.stdout.strip() or "No packages found.")
+
+
+def package_upgrade_all(_: argparse.Namespace) -> None:
+    ensure_command("apt-get")
+    run_command(["apt-get", "update"])
+    run_command(["apt-get", "upgrade", "-y"])
+    print("System packages updated to the latest versions.")
+
+
+def package_upgrade_selected(args: argparse.Namespace) -> None:
+    ensure_command("apt-get")
+    if not args.packages:
+        print("No packages selected.")
+        return
+    run_command(["apt-get", "update"])
+    run_command(["apt-get", "install", "-y", "--only-upgrade", *args.packages])
+    print(f"Upgraded: {', '.join(args.packages)}")
+
+
+def pending_upgrade_packages() -> List[str]:
+    ensure_command("apt-get")
+    result = run_command(["apt-get", "-s", "upgrade"], capture_output=True, check=False)
+    lines = []
+    for line in result.stdout.splitlines():
+        if line.startswith("Inst "):
+            lines.append(line)
+    return lines
 
 
 def monitoring_system_load(_: argparse.Namespace) -> None:
@@ -1440,7 +1468,7 @@ class AisyCliTUI:
             ]
         if label == "Firewall":
             return [
-                ("Show firewall status", lambda: self.execute(firewall_status)),
+                ("Show firewall status", lambda: self.execute(firewall_status, output_title="Firewall status")),
                 ("Enable firewall", lambda: self.firewall_toggle_flow("enable")),
                 ("Disable firewall", lambda: self.firewall_toggle_flow("disable")),
                 ("Allow port", lambda: self.firewall_rule_flow("allow")),
@@ -1449,7 +1477,7 @@ class AisyCliTUI:
         if label == "Storage":
             return [
                 ("Show friendly disk summary", self.storage_status_flow),
-                ("View classic df -h output", lambda: self.execute(storage_df)),
+                ("View classic df -h output", lambda: self.execute(storage_df, output_title="Filesystem usage")),
             ]
         if label == "Network & Internet":
             return [
@@ -1458,6 +1486,7 @@ class AisyCliTUI:
                 ("Show listening ports", lambda: self.execute(network_show_connections, output_title="Listening ports")),
                 ("Show DNS resolvers", lambda: self.execute(network_show_dns, output_title="DNS resolvers")),
                 ("Manage interfaces", self.network_interface_manager_flow),
+                ("Manage netplan", self.netplan_manager_flow),
                 ("Ping host", self.network_ping_flow),
                 ("Traceroute host", self.network_traceroute_flow),
                 ("Test TCP port", self.network_port_test_flow),
@@ -1465,23 +1494,25 @@ class AisyCliTUI:
             ]
         if label == "System & Security":
             return [
-                ("Show system info", lambda: self.execute(system_show_info)),
+                ("Show system info", lambda: self.execute(system_show_info, output_title="System information")),
                 ("Manage services", self.system_manage_services_flow),
                 ("Configure SSH port", self.system_configure_ssh_port),
                 ("Manage authorized_keys", self.system_authorized_keys_flow),
                 ("Manage SSH private keys", self.system_private_keys_flow),
                 ("Manage known_hosts", self.system_known_hosts_flow),
-                ("Recent logins", lambda: self.execute(system_recent_logins)),
-                ("SSH auth logs", lambda: self.execute(system_auth_log)),
-                ("Kernel modules", lambda: self.execute(system_kernel_modules)),
-                ("Check security updates", lambda: self.execute(system_security_updates)),
+                ("Recent logins", lambda: self.execute(system_recent_logins, output_title="Recent logins")),
+                ("SSH auth logs", lambda: self.execute(system_auth_log, output_title="SSH authentication log")),
+                ("Kernel modules", lambda: self.execute(system_kernel_modules, output_title="Kernel modules")),
+                ("Check security updates", lambda: self.execute(system_security_updates, output_title="Security updates")),
             ]
         if label == "Package Manager":
             return [
-                ("List available updates", lambda: self.execute(package_list_updates)),
+                ("List available updates", lambda: self.execute(package_list_updates, output_title="Available package updates")),
                 ("Install package", self.package_install_flow),
                 ("Remove package", self.package_remove_flow),
                 ("Search package", self.package_search_flow),
+                ("Upgrade selected package", self.package_upgrade_selected_flow),
+                ("Upgrade all packages", self.package_upgrade_all_flow),
             ]
         if label == "Monitoring":
             return [
@@ -1489,16 +1520,16 @@ class AisyCliTUI:
             ]
         if label == "Scheduler & Backup":
             return [
-                ("View cron entries", lambda: self.execute(cron_view)),
+                ("View cron entries", lambda: self.execute(cron_view, output_title="Cron entries")),
                 ("Add cron entry", self.cron_add_flow),
                 ("Create tar backup", self.backup_flow),
             ]
         if label == "Logs & Sessions":
             return [
-                ("Tail syslog", lambda: self.execute(view_syslog, allow_reverse=True)),
-                ("Tail journalctl", lambda: self.execute(view_journal, allow_reverse=True)),
-                ("Tail dmesg", lambda: self.execute(view_dmesg, allow_reverse=True)),
-                ("List active sessions", lambda: self.execute(list_sessions, allow_reverse=True)),
+                ("Tail syslog", lambda: self.execute(view_syslog, allow_reverse=True, output_title="Syslog tail")),
+                ("Tail journalctl", lambda: self.execute(view_journal, allow_reverse=True, output_title="Journal tail")),
+                ("Tail dmesg", lambda: self.execute(view_dmesg, allow_reverse=True, output_title="dmesg tail")),
+                ("List active sessions", lambda: self.execute(list_sessions, allow_reverse=True, output_title="Active sessions")),
                 ("Terminate session", self.kill_session_flow),
             ]
         if label == "FTP":
@@ -1702,6 +1733,29 @@ class AisyCliTUI:
                 return None
             return text
 
+    def _edit_text(self, title: str, initial: str) -> Optional[str]:
+        editor = os.environ.get("EDITOR", "nano")
+        with tempfile.NamedTemporaryFile("w+", delete=False) as tmp:
+            tmp.write(initial)
+            tmp_path = tmp.name
+        curses.endwin()
+        try:
+            subprocess.run([editor, tmp_path], check=False)
+        except Exception as exc:
+            print(f"Failed to run editor {editor}: {exc}")
+            return None
+        finally:
+            self.stdscr.clear()
+            self.stdscr.refresh()
+        try:
+            content = Path(tmp_path).read_text()
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        return content
+
     def _select_user_entry(self, title: str) -> Optional[Dict[str, str]]:
         entries = read_passwd_entries()
         if not entries:
@@ -1872,7 +1926,7 @@ class AisyCliTUI:
 
     def _render_about_panel(self, start_x: int, width: int) -> None:
         y = 2
-        panel_width = min(60, width - 4)
+        panel_width = min(70, width - 4)
 
         def draw_centered(line: str, bold: bool = False) -> None:
             padding = max(0, (panel_width - len(line)) // 2)
@@ -1881,10 +1935,10 @@ class AisyCliTUI:
             self._safe_addstr(y, start_x, text[: width], attr)
 
         banner = [
-            "══════════════════════════════════════",
-            "             aisy-cli                 ",
-            "   modern terminal operations hub     ",
-            "══════════════════════════════════════",
+            "════════════════════════════════════════════════════",
+            "                   aisy-cli                         ",
+            "    Comprehensive Linux administration companion     ",
+            "════════════════════════════════════════════════════",
         ]
         for line in banner:
             draw_centered(line, bold=True)
@@ -1892,28 +1946,37 @@ class AisyCliTUI:
         y += 1
 
         info_rows = [
-            ("Creator", "Umarul Fiddin"),
+            ("Author", "Umarul Fiddin"),
             ("Version", "1.0.1"),
-            ("GitHub", "https://github.com/umarfd/aisy-cli.git"),
+            ("Repository", "https://github.com/umarfd/aisy-cli.git"),
+            ("Contact", "umar.edm@gmail.com"),
         ]
         for label, value in info_rows:
-            line = f"{label:<8} : {value}"
+            line = f"{label:<10}: {value}"
             self._safe_addstr(y, start_x + 2, line[: width])
             y += 1
         y += 1
 
         summary = [
-            "aisy-cli condenses everyday sysadmin tasks into a",
-            "single curses UI so you can stay on the keyboard.",
+            "Mission",
+            "  Deliver dependable tooling for Linux administrators",
+            "  by consolidating daily operations into a single",
+            "  keyboard-first interface.",
             "",
-            "Key capabilities:",
-            "  • User, SSH, and key lifecycle controls",
-            "  • Firewall, networking, and service management",
-            "  • Storage insights, monitoring, and scheduling",
-            "  • FTP administration plus quick log access",
+            "Highlights",
+            "  • Structured menus for user, network, and security tasks",
+            "  • Context-aware prompts and confirmations",
+            "  • Live monitoring inspired by htop/btop",
+            "  • Netplan and interface managers for network agility",
+            "  • FTP and package automation with audit-friendly logs",
+            "",
+            "Support",
+            "  Submit feedback or contributions through GitHub issues.",
+            "  Commercial support available on request.",
         ]
         for line in summary:
-            self._safe_addstr(y, start_x + 2, line[: width])
+            style = curses.A_BOLD if line and not line.startswith("  ") else curses.A_NORMAL
+            self._safe_addstr(y, start_x + 2, line[: width], style)
             y += 1
 
     def _draw_card(self, y: int, x: int, width: int, title: str, lines: List[str]) -> int:
@@ -2701,7 +2764,7 @@ class AisyCliTUI:
 
     def firewall_menu(self) -> None:
         options = [
-            ("Show firewall status", lambda: self.execute(firewall_status)),
+            ("Show firewall status", lambda: self.execute(firewall_status, output_title="Firewall status")),
             ("Enable firewall", lambda: self.firewall_toggle_flow("enable")),
             ("Disable firewall", lambda: self.firewall_toggle_flow("disable")),
             ("Allow port", lambda: self.firewall_rule_flow("allow")),
@@ -2735,7 +2798,7 @@ class AisyCliTUI:
     def storage_menu(self) -> None:
         options = [
             ("Show friendly disk summary", self.storage_status_flow),
-            ("View classic df -h output", lambda: self.execute(storage_df)),
+            ("View classic df -h output", lambda: self.execute(storage_df, output_title="Filesystem usage")),
         ]
         self.menu_loop("Storage", options)
 
@@ -2746,7 +2809,12 @@ class AisyCliTUI:
         threshold = self.prompt_float("Alert threshold (%)", default=80.0, allow_cancel=True)
         if threshold is None:
             return
-        self.execute(storage_status, path=path, threshold=threshold)
+        self.execute(
+            storage_status,
+            path=path,
+            threshold=threshold,
+            output_title=f"Storage status for {path}",
+        )
 
     def network_ping_flow(self) -> None:
         host = self.prompt_text("Host to ping", default="8.8.8.8", allow_cancel=True)
@@ -2760,13 +2828,19 @@ class AisyCliTUI:
             host=host,
             count=count,
             loading_message="Pinging host...",
+            output_title=f"Ping {host}",
         )
 
     def network_traceroute_flow(self) -> None:
         host = self.prompt_text("Host to trace", default="8.8.8.8", allow_cancel=True)
         if host is None:
             return
-        self.execute(network_traceroute, host=host, loading_message="Tracing route...")
+        self.execute(
+            network_traceroute,
+            host=host,
+            loading_message="Tracing route...",
+            output_title=f"Traceroute {host}",
+        )
 
     def network_port_test_flow(self) -> None:
         host = self.prompt_text("Host to test", default="127.0.0.1", allow_cancel=True)
@@ -2780,6 +2854,7 @@ class AisyCliTUI:
             host=host,
             port=port,
             loading_message="Testing TCP port...",
+            output_title=f"Port test {host}:{port}",
         )
 
     def package_install_flow(self) -> None:
@@ -2798,7 +2873,36 @@ class AisyCliTUI:
         term = self.prompt_text("Search term", allow_cancel=True)
         if term is None:
             return
-        self.execute(package_search, term=term)
+        self.execute(package_search, term=term, output_title=f"Search results for '{term}'")
+
+    def package_upgrade_all_flow(self) -> None:
+        confirm = self.prompt_bool("Upgrade all packages now?", default=False, allow_cancel=True)
+        if not confirm:
+            return
+        self.execute(package_upgrade_all, output_title="Upgrade all packages")
+
+    def package_upgrade_selected_flow(self) -> None:
+        entries = pending_upgrade_packages()
+        if not entries:
+            self.show_status("No packages to upgrade.")
+            return
+        labels = []
+        names = []
+        for line in entries:
+            parts = line.split()
+            name = parts[1] if len(parts) > 1 else line
+            labels.append(line[:80])
+            names.append(name)
+        choice = self.select_option(
+            "Select package to upgrade",
+            labels,
+            footer="Enter=upgrade · q=back",
+            exit_with_q=True,
+        )
+        if choice is None:
+            return
+        pkg = names[choice]
+        self.execute(package_upgrade_selected, packages=[pkg], output_title=f"Upgrade {pkg}")
 
     def cron_add_flow(self) -> None:
         schedule = self.prompt_text("Cron expression (e.g., */5 * * * *)", allow_cancel=True)
@@ -2936,12 +3040,17 @@ class AisyCliTUI:
         port = self.prompt_int("FTP port", default=21, allow_cancel=True)
         if port is None:
             return
-        self.execute(ftp_test_connection, host=host, port=port)
+        self.execute(
+            ftp_test_connection,
+            host=host,
+            port=port,
+            output_title=f"FTP test {host}:{port}",
+        )
 
     def ftp_service_flow(self) -> None:
         actions = [
             ("Install vsftpd", lambda: self._confirm_then_run("Install vsftpd now?", ftp_install)),
-            ("Service status", lambda: self.execute(ftp_status)),
+            ("Service status", lambda: self.execute(ftp_status, output_title="vsftpd status")),
             ("Start service", lambda: self._confirm_then_run("Start vsftpd service?", ftp_control, state="start")),
             ("Stop service", lambda: self._confirm_then_run("Stop vsftpd service?", ftp_control, state="stop")),
             ("Restart service", lambda: self._confirm_then_run("Restart vsftpd service?", ftp_control, state="restart")),
@@ -3233,8 +3342,11 @@ class AisyCliTUI:
                 index = (index + 1) % len(interfaces)
             elif key in (ord("u"), ord("U")):
                 iface = interfaces[index]["name"]
-                confirm = self.prompt_bool(f"Bawa {iface} UP?", default=True, allow_cancel=True)
-                if not confirm:
+                confirm = self.prompt_text(
+                    f"Type 'yes' to bring {iface} UP",
+                    allow_cancel=True,
+                )
+                if not (confirm and confirm.lower() == "yes"):
                     continue
                 self._run_simple_command(
                     network_interface_up_down,
@@ -3252,8 +3364,11 @@ class AisyCliTUI:
                 interfaces = self._read_interfaces()
             elif key in (ord("d"), ord("D")):
                 iface = interfaces[index]["name"]
-                confirm = self.prompt_bool(f"Bawa {iface} DOWN?", default=True, allow_cancel=True)
-                if not confirm:
+                confirm = self.prompt_text(
+                    f"Type 'yes' to bring {iface} DOWN",
+                    allow_cancel=True,
+                )
+                if not (confirm and confirm.lower() == "yes"):
                     continue
                 self._saved_interface_ips[iface] = interfaces[index].get("addr_list", [])
                 self._run_simple_command(
@@ -3308,6 +3423,99 @@ class AisyCliTUI:
                 iface = interfaces[index]["name"]
                 detail = network_interface_show_detail(iface)
                 self.show_output(f"{iface} detail", detail, allow_reverse=True)
+
+    def netplan_manager_flow(self) -> None:
+        base = Path("/etc/netplan")
+        files = sorted(base.glob("*.yaml")) + sorted(base.glob("*.yml"))
+        entries = [path for path in files if path.is_file()]
+        if not entries:
+            self.show_status("No netplan YAML files under /etc/netplan.")
+            return
+        index = 0
+        while True:
+            self._draw_netplan_list(entries, index)
+            key = self.stdscr.getch()
+            if key in (ord("q"), ord("Q"), 27, curses.KEY_LEFT, ord("h")):
+                break
+            if key in (curses.KEY_UP, ord("k")):
+                index = (index - 1) % len(entries)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                index = (index + 1) % len(entries)
+            elif key in (ord("a"), ord("A")):
+                self._run_netplan_command(["generate"])
+            elif key in (ord("p"), ord("P")):
+                self._run_netplan_command(["apply"])
+            elif key in (ord("v"), ord("V")):
+                path = entries[index]
+                content = path.read_text()
+                self.show_output(path.name, content or "(empty)", allow_reverse=True)
+            elif key in (ord("e"), ord("E")):
+                path = entries[index]
+                backup = path.read_text()
+                updated = self._edit_text(path.name, backup)
+                if updated is None:
+                    continue
+                path.write_text(updated)
+                self.show_output("Netplan", f"Saved {path}")
+            elif key in (ord("g"), ord("G")):
+                self._run_netplan_command(["try"])
+            elif key in (ord("n"), ord("N")):
+                name = self.prompt_text("New netplan filename (e.g. 50-new.yaml)", allow_cancel=True)
+                if not name:
+                    continue
+                path = base / name
+                if path.exists():
+                    self.show_status("File already exists.")
+                    continue
+                path.write_text("# netplan configuration\n")
+                entries = sorted(base.glob("*.yaml")) + sorted(base.glob("*.yml"))
+                index = entries.index(path)
+            elif key in (ord("d"), ord("D")):
+                path = entries[index]
+                confirm = self.prompt_bool(f"Delete {path.name}?", default=False, allow_cancel=True)
+                if confirm:
+                    path.unlink()
+                    entries = sorted(base.glob("*.yaml")) + sorted(base.glob("*.yml"))
+                    if not entries:
+                        self.show_status("No netplan files remaining.")
+                        return
+                    index %= len(entries)
+
+    def _draw_netplan_list(self, entries: List[Path], index: int) -> None:
+        height, width = self.stdscr.getmaxyx()
+        win_height = min(max(len(entries), 1) + 6, height - 2)
+        win_width = min(80, width - 4)
+        start_y = max(2, (height - win_height) // 2)
+        start_x = max(2, (width - win_width) // 2)
+        window = curses.newwin(win_height, win_width, start_y, start_x)
+        window.keypad(True)
+        window.clear()
+        self._box_border(window)
+        window.addstr(1, 2, "Netplan configurations", curses.A_BOLD)
+        instructions = "↑/↓ select · v view · e edit · n new · d delete · a gen · p apply · g try · q back"
+        window.addstr(win_height - 2, 2, instructions[: win_width - 4], self._color(2))
+        visible = win_height - 4
+        if entries:
+            index = max(0, min(index, len(entries) - 1))
+            offset = max(0, min(index - visible + 1, max(len(entries) - visible, 0)))
+            for i in range(visible):
+                pos = offset + i
+                if pos >= len(entries):
+                    break
+                entry = entries[pos]
+                label = f"{entry.name:<30} {entry.stat().st_size} bytes"
+                attr = curses.A_REVERSE if pos == index else curses.A_NORMAL
+                window.addstr(3 + i, 2, label[: win_width - 4], attr)
+        else:
+            window.addstr(3, 2, "(no netplan files detected)"[: win_width - 4])
+        window.refresh()
+
+    def _run_netplan_command(self, args: List[str]) -> None:
+        ensure_command("netplan")
+        result = run_command(["netplan", *args], capture_output=True, check=False)
+        output = result.stdout.strip() or result.stderr.strip() or "(no output)"
+        success = result.returncode == 0
+        self.show_output(f"netplan {' '.join(args)}", output, success=success, allow_reverse=True)
 
     def _read_interfaces(self) -> List[Dict[str, Any]]:
         ensure_command("ip")

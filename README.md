@@ -35,6 +35,7 @@ Ensure the following packages are installed on the host before launching the CLI
 - `isc-dhcp-client` (for requesting automatic IP addresses in the interface manager)
 - `nc`/`netcat`
 - `vsftpd` (only required if you plan to manage FTP services)
+- `netplan.io` (needed for the netplan manager)
 
 Install everything with the bundled helper:
 
@@ -58,7 +59,7 @@ aisy  # launches the TUI
 | Dashboard | Summaries for system info, load averages, memory/swap usage, storage, firewall state, pending package updates, FTP status, and recent CPU-heavy processes. |
 | Monitoring | Live dashboard inspired by `htop`/`btop`: CPU averages, per-core bars, memory & swap gauges, disk usage, network throughput, and top processes with a 1s refresh. |
 | User Management | List/manage users with lock/unlock indicators, detailed profiles, password resets, home cleanup, and SSH key workflows. |
-| Network & Internet | Interfaces, routes, sockets, DNS, ping with progress spinners, traceroute, TCP port checks, HTTPS connectivity tests. |
+| Network & Internet | Interfaces, routes, sockets, DNS, ping with progress spinners, traceroute, TCP port checks, HTTPS connectivity tests, netplan config editor, and link management. |
 | System & Security | System info, service manager, SSH port editor, known_hosts/authorized_keys maintenance, login history, auth logs, kernel modules, and security updates. |
 | Scheduler & Backup | Inspect cron entries, append jobs, and create tarball backups from any directory. |
 | Logs & Sessions | Tail syslog/journal/dmesg, list active `who` sessions, and end rogue TTYs. |

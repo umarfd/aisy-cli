@@ -69,27 +69,15 @@ aisy  # launch the TUI
 
 ### Screenshots
 
-Dashboard preview:
+| View | Preview |
+| ---- | ------- |
+| Dashboard overview | ![Dashboard](docs/screenshots/dashboard.png) |
+| System users menu | ![System users](docs/screenshots/systemusers.png) |
+| Firewall summary | ![Firewall](docs/screenshots/firewall.png) |
+| Network & Internet | ![Network & Internet](docs/screenshots/networkinternet.png) |
+| System & Security | ![System & Security](docs/screenshots/systemsecurity.png) |
 
-```
-╭─────────────── Dashboard ───────────────╮
-│ Host     : demo-host                   │
-│ Kernel   : 6.8.0-xx-generic            │
-│ Time     : 2025-01-05 10:24            │
-│ Uptime   : 3d 12h                      │
-│ -------------------------------------  │
-│ CPU   [########------] 45%             │
-│ MEM   [##########----] 62%             │
-│ DISK  [######--------] 35%             │
-│ NET   RX 18.2 MB · TX 9.4 MB           │
-│ -------------------------------------  │
-│ • User management                      │
-│ • Network & Internet                   │
-│ • System & Security                    │
-╰────────────────────────────────────────╯
-```
-
-*Tip*: capture real screenshots with tools like `screen`, `tmux capture-pane`, or `asciinema`, then store them under `docs/screenshots/` and replace the preview above with Markdown image links.
+> Screenshots are stored in `docs/screenshots/`. Replace them with your own captures if needed.
 
 ### Navigation & Shortcuts
 

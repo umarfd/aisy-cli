@@ -13,6 +13,7 @@ import argparse
 import curses
 import grp
 import io
+import json
 import os
 import platform
 import shutil
@@ -294,25 +295,15 @@ def gather_dashboard_data() -> Dict[str, Any]:
     except Exception:
         users = {"total": 0, "regular": 0, "system": 0, "login_shells": 0, "home_missing": 0}
 
-    storage = get_storage_overview("/")
-    memory = get_memory_summary()
-    swap_total, swap_used, swap_pct = read_swap_stats()
-    load1, load5, load15 = read_load_average()
-    uptime_seconds = 0.0
     try:
-        uptime_raw = Path("/proc/uptime").read_text().split()[0]
-        uptime_seconds = float(uptime_raw)
+        storage = get_storage_overview("/")
     except Exception:
-        pass
-    net = read_network_stats()
-    processes = read_process_table(limit=6)
+        storage = {"path": "/", "total_gb": 0, "used_gb": 0, "free_gb": 0, "used_pct": 0}
+
     try:
-        updates = run_command(["apt-get", "-s", "upgrade"], capture_output=True, check=False)
-        pending_updates = sum(
-            1 for line in updates.stdout.splitlines() if line.startswith("Inst ")
-        )
+        memory = get_memory_summary()
     except Exception:
-        pending_updates = 0
+        memory = {"total": 0, "available": 0, "used": 0, "used_pct": 0}
 
     try:
         firewall_backend, firewall_status_line = get_firewall_summary()
@@ -335,12 +326,6 @@ def gather_dashboard_data() -> Dict[str, Any]:
         "memory": memory,
         "ftp_users": ftp_users,
         "ftp_state": ftp_state,
-        "swap": {"total": swap_total, "used": swap_used, "used_pct": swap_pct},
-        "load": {"one": load1, "five": load5, "fifteen": load15},
-        "uptime_seconds": uptime_seconds,
-        "network": net,
-        "processes": processes,
-        "pending_updates": pending_updates,
     }
 
 
@@ -860,6 +845,52 @@ def network_show_dns(_: argparse.Namespace) -> None:
         print("\n".join(lines))
 
 
+def network_interface_show_detail(iface: str) -> str:
+    ensure_command("ip")
+    result = run_command(["ip", "address", "show", iface], capture_output=True, check=False)
+    return result.stdout.strip() or result.stderr.strip() or f"No details for {iface}"
+
+
+def network_interface_up_down(args: argparse.Namespace) -> None:
+    ensure_command("ip")
+    action = "up" if args.state == "up" else "down"
+    run_command(["ip", "link", "set", args.interface, action])
+    print(f"Interface {args.interface} set {action}.")
+
+
+def network_interface_assign(args: argparse.Namespace) -> None:
+    ensure_command("ip")
+    run_command(
+        ["ip", "address", "add", args.address, "dev", args.interface],
+        capture_output=False,
+        check=True,
+    )
+    print(f"Assigned {args.address} to {args.interface}.")
+
+
+def network_interface_remove(args: argparse.Namespace) -> None:
+    ensure_command("ip")
+    run_command(
+        ["ip", "address", "del", args.address, "dev", args.interface],
+        capture_output=False,
+        check=True,
+    )
+    print(f"Removed {args.address} from {args.interface}.")
+
+
+def network_interface_request_dhcp(args: argparse.Namespace) -> None:
+    dhclient = shutil.which("dhclient")
+    if not dhclient:
+        raise RuntimeError("dhclient not found. Install it to request automatic IP.")
+    result = run_command(
+        [dhclient, "-v", "-1", args.interface],
+        capture_output=True,
+        check=False,
+    )
+    output = result.stdout.strip() or result.stderr.strip() or "DHCP request issued."
+    print(output)
+
+
 def network_check_connectivity(_: argparse.Namespace) -> None:
     ensure_command("curl")
     result = run_command(
@@ -1256,6 +1287,7 @@ class AisyCliTUI:
         self._sidebar_top = 0
         self._action_panel_meta: Optional[Dict[str, Any]] = None
         self._pending_hint = ""
+        self._saved_interface_ips: Dict[str, List[str]] = {}
 
     def run(self) -> None:
         menu_items = [
@@ -1421,14 +1453,15 @@ class AisyCliTUI:
             ]
         if label == "Network & Internet":
             return [
-                ("Show IP addresses", lambda: self.execute(network_show_interfaces)),
-                ("Show routing table", lambda: self.execute(network_show_routes)),
-                ("Show listening ports", lambda: self.execute(network_show_connections)),
-                ("Show DNS resolvers", lambda: self.execute(network_show_dns)),
+                ("Show IP addresses", lambda: self.execute(network_show_interfaces, output_title="IP addresses")),
+                ("Show routing table", lambda: self.execute(network_show_routes, output_title="Routing table")),
+                ("Show listening ports", lambda: self.execute(network_show_connections, output_title="Listening ports")),
+                ("Show DNS resolvers", lambda: self.execute(network_show_dns, output_title="DNS resolvers")),
+                ("Manage interfaces", self.network_interface_manager_flow),
                 ("Ping host", self.network_ping_flow),
                 ("Traceroute host", self.network_traceroute_flow),
                 ("Test TCP port", self.network_port_test_flow),
-                ("Check HTTPS connectivity", lambda: self.execute(network_check_connectivity)),
+                ("Check HTTPS connectivity", lambda: self.execute(network_check_connectivity, output_title="HTTPS connectivity")),
             ]
         if label == "System & Security":
             return [
@@ -1763,78 +1796,66 @@ class AisyCliTUI:
         return True
 
     def _render_dashboard(self, start_x: int, width: int, data: Dict[str, Any]) -> None:
-        height, term_width = self.stdscr.getmaxyx()
-        banner = f"System overview · {data['system']['hostname']} · {data['system']['time']} · uptime {data['system']['uptime']}"
-        self._safe_addstr(2, start_x, banner[: term_width - 4], curses.A_BOLD)
-
-        lines = [
-            f"Kernel {data['system']['kernel']} · Load {data['load']['one']:.2f}/{data['load']['five']:.2f}/{data['load']['fifteen']:.2f}",
-            f"Users: total {data['users']['total']} (regular {data['users']['regular']} · system {data['users']['system']} · login {data['users']['login_shells']} · missing homes {data['users']['home_missing']})",
-        ]
-        y = 4
-        for line in lines:
-            self._safe_addstr(y, start_x, line[: term_width - 4])
-            y += 1
-        y += 1
-
-        mem_line = (
-            f"Memory {data['memory']['used']:.2f}/{data['memory']['total']:.2f} GB ({data['memory']['used_pct']:.1f}%) "
-            f"{usage_bar(data['memory']['used_pct'], 28)} · Available {data['memory']['available']:.2f} GB"
-        )
-        swap = data["swap"]
-        swap_line = (
-            f"Swap   {swap['used']:.2f}/{swap['total']:.2f} GB ({swap['used_pct']:.1f}%) {usage_bar(swap['used_pct'], 28)}"
-        )
-        storage = data["storage"]
-        disk_line = (
-            f"Storage {storage['used_gb']:.1f}/{storage['total_gb']:.1f} GB ({storage['used_pct']:.1f}%) "
-            f"{usage_bar(storage['used_pct'], 28)} · Mount {storage['path']}"
-        )
-        net = data["network"]
-        net_line = (
-            f"Network totals RX {net['received_mb']:.1f} MB · TX {net['transmit_mb']:.1f} MB"
-        )
-        for line in (mem_line, swap_line, disk_line, net_line):
-            self._safe_addstr(y, start_x, line[: term_width - 4])
-            y += 1
-        y += 1
-
-        columns = 2 if term_width >= 90 else 1
-        card_width = max(32, (term_width - start_x - 2) // columns)
+        columns = 1 if width < 70 else 2
+        card_width = max(30, (width - 2) // columns)
         cards = [
+            (
+                "System",
+                [
+                    f"Host     : {data['system']['hostname']}",
+                    f"Kernel   : {data['system']['kernel']}",
+                    f"Time     : {data['system']['time']}",
+                    f"Uptime   : {data['system']['uptime']}",
+                ],
+            ),
+            (
+                "Users",
+                [
+                    f"Total    : {data['users']['total']} (regular {data['users']['regular']})",
+                    f"System   : {data['users']['system']}",
+                    f"Logins   : {data['users']['login_shells']}",
+                    f"Homes ✕  : {data['users']['home_missing']}",
+                ],
+            ),
+            (
+                "Memory",
+                [
+                    f"Total    : {data['memory']['total']:.1f} GB",
+                    f"Used     : {data['memory']['used']:.1f} GB",
+                    f"Free     : {data['memory']['available']:.1f} GB",
+                    f"Usage    : {data['memory']['used_pct']:.1f}% {self._usage_bar(data['memory']['used_pct'])}",
+                ],
+            ),
+            (
+                "Storage",
+                [
+                    f"Mount    : {data['storage']['path']}",
+                    f"Total    : {data['storage']['total_gb']:.1f} GB",
+                    f"Used     : {data['storage']['used_gb']:.1f} GB",
+                    f"Usage    : {data['storage']['used_pct']:.1f}% {self._usage_bar(data['storage']['used_pct'])}",
+                ],
+            ),
             (
                 "Security",
                 [
-                    f"Firewall backend : {data['firewall_backend']}",
-                    f"Firewall status  : {data['firewall_status']}",
-                    f"VSFTPD service   : {data['ftp_state']}",
+                    f"Firewall : {data['firewall_backend']}",
+                    f"Status   : {data['firewall_status']}",
+                    f"VSFTPD   : {data['ftp_state']}",
                 ],
             ),
             (
-                "FTP activity",
+                "FTP",
                 [
-                    f"Allowlisted users: {data['ftp_users']}",
-                    "Manage FTP users/ports in FTP section.",
-                ],
-            ),
-            (
-                "Updates",
-                [
-                    f"Pending packages : {data['pending_updates']}",
-                    "Use Package Manager to install upgrades.",
-                ],
-            ),
-            (
-                "Quick stats",
-                [
-                    f"Uptime seconds   : {int(data['uptime_seconds']):,}",
-                    f"Last refresh     : {data['system']['time']}",
+                    f"Allowlist users : {data['ftp_users']}",
+                    "Use FTP menu to manage accounts and config.",
                 ],
             ),
         ]
+
+        y = 2
         if columns == 1:
             for title, lines in cards:
-                y = self._draw_card(y, start_x, term_width - 4, title, lines) + 1
+                y = self._draw_card(y, start_x, width, title, lines) + 1
         else:
             idx = 0
             while idx < len(cards):
@@ -1848,13 +1869,6 @@ class AisyCliTUI:
                     right_end = y
                     idx += 1
                 y = max(left_end, right_end) + 1
-
-        y += 1
-        self._safe_addstr(y, start_x, "Recent CPU-heavy processes", curses.A_BOLD)
-        for idx, row in enumerate(data["processes"], start=1):
-            if y + idx >= height - 2:
-                break
-            self._safe_addstr(y + idx, start_x, row[: term_width - 4])
 
     def _render_about_panel(self, start_x: int, width: int) -> None:
         y = 2
@@ -2222,6 +2236,7 @@ class AisyCliTUI:
         *,
         allow_reverse: bool = False,
         loading_message: Optional[str] = None,
+        output_title: Optional[str] = None,
         **kwargs,
     ) -> None:
         if loading_message:
@@ -2250,7 +2265,7 @@ class AisyCliTUI:
             success, output = result_holder[0] if result_holder[0] is not None else (False, "(no output)")
         else:
             success, output = run_action(handler, **kwargs)
-        title = "Success" if success else "Error"
+        title = output_title if success and output_title else ("Success" if success else "Error")
         self.show_output(title, output, success=success, allow_reverse=allow_reverse)
 
     def user_menu(self) -> None:
@@ -3008,6 +3023,43 @@ class AisyCliTUI:
                     else:
                         index = -1
                     self.show_status("FTP user entry removed.")
+        self._show_hint("")
+
+    def _show_ftp_allowlist_preview(self) -> None:
+        entries = ftp_read_userlist()
+        height, width = self.stdscr.getmaxyx()
+        win_height = min(max(len(entries), 1) + 6, height - 2)
+        win_width = min(60, width - 4)
+        start_y = max(2, (height - win_height) // 2)
+        start_x = max(2, (width - win_width) // 2)
+        window = curses.newwin(win_height, win_width, start_y, start_x)
+        window.keypad(True)
+        index = len(entries) - 1 if entries else 0
+        while True:
+            window.clear()
+            self._box_border(window)
+            window.addstr(1, 2, "FTP allowlist", curses.A_BOLD)
+            visible = win_height - 4
+            if entries:
+                offset = max(0, min(index - visible + 1, max(len(entries) - visible, 0)))
+                for i in range(visible):
+                    pos = offset + i
+                    if pos >= len(entries):
+                        break
+                    attr = curses.A_REVERSE if pos == index else curses.A_NORMAL
+                    window.addstr(3 + i, 2, entries[pos][: win_width - 4], attr)
+            else:
+                window.addstr(3, 2, "(no FTP users)"[: win_width - 4])
+            window.refresh()
+            self._show_hint("FTP allowlist · Enter/q=close")
+            key = window.getch()
+            if key in (10, 13, ord("q"), ord("Q"), 27):
+                self._show_hint("")
+                break
+            if key in (curses.KEY_UP, ord("k")) and entries:
+                index = (index - 1) % len(entries)
+            elif key in (curses.KEY_DOWN, ord("j")) and entries:
+                index = (index + 1) % len(entries)
 
     def _ftp_manage_userlist_entry(self, username: str) -> bool:
         options = [
@@ -3163,6 +3215,179 @@ class AisyCliTUI:
         self._show_hint("")
         self.stdscr.timeout(-1)
 
+    def network_interface_manager_flow(self) -> None:
+        ensure_command("ip")
+        interfaces = self._read_interfaces()
+        if not interfaces:
+            self.show_status("No interfaces detected.")
+            return
+        index = 0
+        while True:
+            self._draw_interface_manager(interfaces, index)
+            key = self.stdscr.getch()
+            if key in (ord("q"), ord("Q"), 27, curses.KEY_LEFT, ord("h")):
+                break
+            if key in (curses.KEY_UP, ord("k")):
+                index = (index - 1) % len(interfaces)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                index = (index + 1) % len(interfaces)
+            elif key in (ord("u"), ord("U")):
+                iface = interfaces[index]["name"]
+                confirm = self.prompt_bool(f"Bawa {iface} UP?", default=True, allow_cancel=True)
+                if not confirm:
+                    continue
+                self._run_simple_command(
+                    network_interface_up_down,
+                    f"Bringing {iface} up...",
+                    interface=iface,
+                    state="up",
+                )
+                restored = self._restore_interface_ips(iface)
+                if not restored:
+                    self._run_simple_command(
+                        network_interface_request_dhcp,
+                        f"Requesting DHCP on {iface}...",
+                        interface=iface,
+                    )
+                interfaces = self._read_interfaces()
+            elif key in (ord("d"), ord("D")):
+                iface = interfaces[index]["name"]
+                confirm = self.prompt_bool(f"Bawa {iface} DOWN?", default=True, allow_cancel=True)
+                if not confirm:
+                    continue
+                self._saved_interface_ips[iface] = interfaces[index].get("addr_list", [])
+                self._run_simple_command(
+                    network_interface_up_down,
+                    f"Bringing {iface} down...",
+                    interface=iface,
+                    state="down",
+                )
+                interfaces = self._read_interfaces()
+            elif key in (ord("a"), ord("A")):
+                iface = interfaces[index]["name"]
+                cidr = self.prompt_text(f"IP/CIDR to add on {iface}", allow_cancel=True)
+                if cidr:
+                    self._run_simple_command(
+                        network_interface_assign,
+                        f"Assigning {cidr} to {iface}...",
+                        interface=iface,
+                        address=cidr,
+                    )
+                    interfaces = self._read_interfaces()
+            elif key in (ord("r"), ord("R")):
+                iface = interfaces[index]["name"]
+                cidr = self.prompt_text(f"IP/CIDR to remove from {iface}", allow_cancel=True)
+                if cidr:
+                    self._run_simple_command(
+                        network_interface_remove,
+                        f"Removing {cidr} from {iface}...",
+                        interface=iface,
+                        address=cidr,
+                    )
+                    interfaces = self._read_interfaces()
+            elif key in (ord("g"), ord("G")):
+                iface = interfaces[index]["name"]
+                self._run_simple_command(
+                    network_interface_request_dhcp,
+                    f"Requesting DHCP on {iface}...",
+                    interface=iface,
+                )
+                interfaces = self._read_interfaces()
+            elif key in (ord("m"), ord("M")):
+                iface = interfaces[index]["name"]
+                cidr = self.prompt_text(f"Manual IP/CIDR for {iface}", allow_cancel=True)
+                if cidr:
+                    self._run_simple_command(
+                        network_interface_assign,
+                        f"Assigning {cidr} to {iface}...",
+                        interface=iface,
+                        address=cidr,
+                    )
+                    interfaces = self._read_interfaces()
+            elif key in (10, 13):
+                iface = interfaces[index]["name"]
+                detail = network_interface_show_detail(iface)
+                self.show_output(f"{iface} detail", detail, allow_reverse=True)
+
+    def _read_interfaces(self) -> List[Dict[str, Any]]:
+        ensure_command("ip")
+        result = run_command(["ip", "-json", "address"], capture_output=True, check=False)
+        try:
+            data = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            lines = network_show_interfaces(argparse.Namespace())
+            return [
+                {"name": line.split()[0], "state": "unknown", "ips": ""}
+                for line in (lines or "").splitlines()
+            ]
+        interfaces = []
+        for entry in data:
+            name = entry.get("ifname", "?")
+            state = entry.get("operstate", "unknown")
+            addrs = []
+            for addr in entry.get("addr_info", []):
+                local = addr.get("local")
+                prefix = addr.get("prefixlen")
+                if local and prefix is not None:
+                    addrs.append(f"{local}/{prefix}")
+            interfaces.append({"name": name, "state": state, "ips": ", ".join(addrs) or "(no IPs)", "addr_list": addrs})
+        return interfaces
+
+    def _draw_interface_manager(self, interfaces: List[Dict[str, Any]], index: int) -> None:
+        height, width = self.stdscr.getmaxyx()
+        win_height = min(max(len(interfaces), 1) + 6, height - 2)
+        win_width = min(80, width - 4)
+        start_y = max(2, (height - win_height) // 2)
+        start_x = max(2, (width - win_width) // 2)
+        window = curses.newwin(win_height, win_width, start_y, start_x)
+        window.keypad(True)
+        window.clear()
+        self._box_border(window)
+        window.addstr(1, 2, "Interface manager", curses.A_BOLD)
+        instructions = "↑/↓ select · Enter=detail · u up · d down · a add IP · r remove IP · g dhcp · m manual IP · q back"
+        window.addstr(win_height - 2, 2, instructions[: win_width - 4], self._color(2))
+        visible = win_height - 4
+        if interfaces:
+            index = max(0, min(index, len(interfaces) - 1))
+            offset = max(0, min(index - visible + 1, max(len(interfaces) - visible, 0)))
+            for i in range(visible):
+                pos = offset + i
+                if pos >= len(interfaces):
+                    break
+                entry = interfaces[pos]
+                label = f"{entry['name']:<10} [{entry['state']:<7}] {entry['ips']}"
+                attr = curses.A_REVERSE if pos == index else curses.A_NORMAL
+                window.addstr(3 + i, 2, label[: win_width - 4], attr)
+        else:
+            window.addstr(3, 2, "(no interfaces detected)"[: win_width - 4])
+        window.refresh()
+        self._show_hint("Interface manager · q=back")
+
+    def _run_simple_command(
+        self,
+        handler: Callable[[argparse.Namespace], None],
+        message: str,
+        **kwargs,
+    ) -> None:
+        self._show_hint(message + " q=cancel")
+        success, output = run_action(handler, **kwargs)
+        self._show_hint("")
+        title = "Sukses" if success else "Gagal"
+        body = output or ("Sukses" if success else "Gagal")
+        self.show_output(title, body, success=success)
+
+    def _restore_interface_ips(self, iface: str) -> bool:
+        addrs = self._saved_interface_ips.pop(iface, [])
+        if not addrs:
+            return False
+        for cidr in addrs:
+            self._run_simple_command(
+                network_interface_assign,
+                f"Restoring {cidr} on {iface}...",
+                interface=iface,
+                address=cidr,
+            )
+        return True
     def ftp_add_user_flow(self) -> None:
         username = self.prompt_text("FTP username", allow_cancel=True)
         if username is None:
@@ -3203,6 +3428,7 @@ class AisyCliTUI:
             password=password,
             append_userlist=append_userlist,
         )
+        self._show_ftp_allowlist_preview()
 
     def ftp_remove_user_flow(self) -> None:
         username = self.prompt_text("FTP username to remove", allow_cancel=True)

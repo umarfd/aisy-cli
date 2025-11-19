@@ -32,6 +32,7 @@ Ensure the following packages are installed on the host before launching the CLI
 - `python3`
 - `openssh-client`
 - `traceroute` (needed for the Network → Traceroute feature; the installer will pull this package automatically)
+- `isc-dhcp-client` (for requesting automatic IP addresses in the interface manager)
 - `nc`/`netcat`
 - `vsftpd` (only required if you plan to manage FTP services)
 

@@ -1186,6 +1186,31 @@ def ftp_apply_recommended(_: argparse.Namespace) -> None:
     print("Applied recommended vsftpd configuration and restarted service.")
 
 
+def vsftpd_is_installed() -> bool:
+    return shutil.which("vsftpd") is not None and Path("/etc/vsftpd.conf").exists()
+
+
+def vsftpd_has_recommended_config() -> bool:
+    config_path = Path("/etc/vsftpd.conf")
+    if not config_path.exists():
+        return False
+    desired = {
+        "local_enable": "YES",
+        "write_enable": "YES",
+        "userlist_enable": "YES",
+        "userlist_file": "/etc/vsftpd.userlist",
+        "userlist_deny": "NO",
+    }
+    actual = {}
+    for line in config_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        actual[key.strip()] = value.strip()
+    return all(actual.get(key) == value for key, value in desired.items())
+
+
 def ftp_test_connection(args: argparse.Namespace) -> None:
     if shutil.which("curl"):
         cmd = ["curl", f"ftp://{args.host}:{args.port}", "--max-time", "5", "-I"]
@@ -1444,6 +1469,8 @@ class AisyCliTUI:
             info = self._section_port_status(label)
             if info:
                 y = self._draw_lines(start_x, y, info, width)
+            if label == "FTP":
+                y = self._render_ftp_notice(start_x, y, width)
             operations = self.get_operations(label)
             self._draw_action_panel(
                 label,
@@ -1539,6 +1566,18 @@ class AisyCliTUI:
                 ("Terminate session", self.kill_session_flow),
             ]
         if label == "FTP":
+            installed = vsftpd_is_installed()
+            recommended = vsftpd_has_recommended_config() if installed else False
+            if not installed:
+                return [
+                    ("Install vsftpd", self.ftp_install_and_apply_flow),
+                    ("Back", lambda: None),
+                ]
+            if not recommended:
+                return [
+                    ("Apply recommended config", self.ftp_apply_recommended_flow),
+                    ("Back", lambda: None),
+                ]
             return [
                 ("Manage vsftpd service", self.ftp_service_flow),
                 ("Manage FTP user list", self.ftp_userlist_flow),
@@ -3071,6 +3110,16 @@ class AisyCliTUI:
             output_title=f"FTP test {host}:{port}",
         )
 
+    def ftp_install_and_apply_flow(self) -> None:
+        confirm = self.prompt_bool("Install vsftpd and apply recommended config?", default=True, allow_cancel=True)
+        if not confirm:
+            return
+        self._show_hint("Installing vsftpd...")
+        self._confirm_then_run("Install vsftpd now?", ftp_install)
+        self._show_hint("Applying recommended configuration...")
+        self.ftp_apply_recommended_flow()
+        self._show_hint("")
+
     def ftp_service_flow(self) -> None:
         actions = [
             ("Install vsftpd", lambda: self._confirm_then_run("Install vsftpd now?", ftp_install)),
@@ -3712,6 +3761,24 @@ class AisyCliTUI:
             except Exception as exc:
                 return [f"FTP port status : {exc}", ""]
         return []
+
+    def _render_ftp_notice(self, start_x: int, start_y: int, width: int) -> int:
+        installed = vsftpd_is_installed()
+        if not installed:
+            lines = [
+                "Warning: vsftpd is not installed.",
+                "Select 'Install vsftpd (required)' before using FTP features.",
+                "",
+            ]
+            return self._draw_lines(start_x, start_y, lines, width)
+        if vsftpd_has_recommended_config():
+            return start_y
+        lines = [
+            "Warning: vsftpd configuration differs from recommended baseline.",
+            "Select 'Apply recommended config (required)' to align settings.",
+            "",
+        ]
+        return self._draw_lines(start_x, start_y, lines, width)
 
     def _handle_mouse_input(
         self,

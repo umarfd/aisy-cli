@@ -353,6 +353,9 @@ def add_user(args: argparse.Namespace) -> None:
             check=True,
         )
     print(f"User {args.username} created.")
+    if args.sudo:
+        subprocess.run(["usermod", "-aG", "sudo", args.username], check=True)
+        print(f"User {args.username} added to sudo group.")
 
 
 def delete_user(args: argparse.Namespace) -> None:
@@ -2361,6 +2364,10 @@ class AisyCliTUI:
         )
         if password is None:
             return
+        sudo_answer = self.prompt_text("Should the user be allowed to use sudo? (type 'yes' or 'no')", allow_cancel=True)
+        if sudo_answer is None:
+            return
+        sudo_allowed = sudo_answer.strip().lower() == "yes"
         self.execute(
             add_user,
             username=username,
@@ -2368,6 +2375,7 @@ class AisyCliTUI:
             home=home or None,
             password=password or None,
             system=False,
+            sudo=sudo_allowed,
         )
 
     def change_password_flow(self) -> None:
@@ -2734,6 +2742,16 @@ class AisyCliTUI:
         remove_home = self.prompt_bool("Remove the user's home directory?", default=False, allow_cancel=True)
         if remove_home is None:
             return False
+        if remove_home:
+            typed = self.prompt_text(
+                f"Type 'Delete {username} Directory' to confirm",
+                allow_cancel=True,
+            )
+            if typed is None:
+                return False
+            if typed.strip() != f"Delete {username} Directory":
+                self.show_status("Confirmation phrase did not match. Aborting removal.")
+                return False
         self.execute(delete_user, username=username, remove_home=remove_home)
         return True
 
